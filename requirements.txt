@@ -1,0 +1,4 @@
+yt-dlp>=2025.1.1
+faster-whisper>=1.1.0
+opencv-python-headless>=4.8
+numpy>=1.24
