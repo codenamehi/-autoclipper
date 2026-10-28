@@ -39,7 +39,6 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.staticfiles import StaticFiles
 
 import clipper
 
@@ -343,8 +342,25 @@ def cleaner() -> None:
 # Web app
 # --------------------------------------------------------------------------- #
 app = FastAPI(title="AutoClipper", docs_url=None, redoc_url=None, openapi_url=None)
-STATIC = Path(__file__).parent / "static"
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
+HERE = Path(__file__).parent
+# The page and fonts work either in a "static" folder or right next to server.py,
+# so they can all be uploaded to the top of the repo.
+ASSET_DIRS = [HERE / "static" / "fonts", HERE / "static", HERE / "fonts", HERE]
+
+
+def find_asset(name: str) -> Path | None:
+    return next((d / name for d in ASSET_DIRS if (d / name).is_file()), None)
+
+
+@app.get("/static/fonts/{name}")
+@app.get("/static/{name}")
+def asset(name: str):
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+\.(woff2|txt)", name):
+        raise HTTPException(404, "Not found.")
+    path = find_asset(name)
+    if not path:
+        raise HTTPException(404, "Not found.")
+    return FileResponse(path, headers={"Cache-Control": "public, max-age=604800"})
 
 
 @app.exception_handler(HTTPException)
@@ -355,7 +371,10 @@ async def http_error(_, exc: HTTPException):
 
 @app.get("/")
 def index():
-    return FileResponse(STATIC / "index.html")
+    page = find_asset("index.html")
+    if not page:
+        raise HTTPException(500, "index.html is missing. Upload it next to server.py.")
+    return FileResponse(page)
 
 
 @app.get("/api/config")
