@@ -65,6 +65,8 @@ WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
 FONT = os.getenv("CAPTION_FONT", "Liberation Sans")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 UPGRADE_URL = os.getenv("UPGRADE_URL", "")            # e.g. a Stripe payment link
+WATERMARK_TEXT = os.getenv("WATERMARK_TEXT", "AutoClipper")  # shown on free clips
+WATERMARK_URL = os.getenv("WATERMARK_URL", "")        # end card address (default: this site)
 SECURE_COOKIES = env_bool("SECURE_COOKIES", False)    # set true once you have https
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"}
 PLANS = ("free", "pro")
@@ -293,6 +295,10 @@ def process(job_id: str) -> None:
             captions=job["captions"], model=WHISPER_MODEL, font=FONT,
             allow_local=job["kind"] == "upload", max_minutes=MAX_MINUTES, flat=True,
             manual_starts=job["starts"] if manual else None, manual_len=FREE_CLIP_SECONDS,
+            caption_style=job.get("style"),
+            watermark=WATERMARK_TEXT if job["plan"] == "free" and WATERMARK_TEXT else None,
+            end_card=(WATERMARK_TEXT, WATERMARK_URL or job.get("site", ""))
+            if job["plan"] == "free" and WATERMARK_TEXT else None,
             progress=progress)
         meta = json.loads((out / "clips.json").read_text(encoding="utf-8"))
         clips = [{"file": c["file"], "title": c["title"], "duration": c["duration"],
@@ -355,7 +361,7 @@ def find_asset(name: str) -> Path | None:
 @app.get("/static/fonts/{name}")
 @app.get("/static/{name}")
 def asset(name: str):
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+\.(woff2|txt)", name):
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+\.(woff2|ttf|txt)", name):
         raise HTTPException(404, "Not found.")
     path = find_asset(name)
     if not path:
@@ -382,7 +388,9 @@ def config():
     return {"allow_urls": ALLOW_URLS, "max_upload_mb": MAX_UPLOAD_MB, "max_minutes": MAX_MINUTES,
             "max_clips": MAX_CLIPS, "keep_hours": KEEP_HOURS,
             "free_per_day": FREE_CLIPS_PER_DAY, "free_seconds": FREE_CLIP_SECONDS,
-            "upgrade_url": UPGRADE_URL}
+            "upgrade_url": UPGRADE_URL, "watermark": bool(WATERMARK_TEXT),
+            "caption_fonts": [{"key": k, "family": v[0], "file": v[1]}
+                              for k, v in clipper.CAPTION_FONTS.items()]}
 
 
 # ----- accounts ------------------------------------------------------------ #
@@ -455,10 +463,10 @@ def get_job(job_id: str, user) -> dict:
 
 
 @app.post("/api/jobs")
-async def create_job(file: UploadFile | None = File(None), url: str = Form(""),
-                     clips: int = Form(4), layout: str = Form("face"),
+async def create_job(request: Request, file: UploadFile | None = File(None),
+                     url: str = Form(""), clips: int = Form(4), layout: str = Form("face"),
                      captions: bool = Form(True), starts: str = Form(""),
-                     user=Depends(current_user)):
+                     style: str = Form(""), user=Depends(current_user)):
     plan = user["plan"]
     with jobs_lock:
         active = sum(1 for j in jobs.values()
@@ -494,6 +502,14 @@ async def create_job(file: UploadFile | None = File(None), url: str = Form(""),
     else:
         clips = max(1, min(MAX_CLIPS, clips))
 
+    # Pro: custom caption style. Free: the standard look.
+    caption_style = None
+    if plan == "pro" and style:
+        try:
+            caption_style = clipper.clean_style(json.loads(style))
+        except (ValueError, TypeError):
+            caption_style = None
+
     job_id = secrets.token_urlsafe(12)
     d = job_dir(job_id)
     d.mkdir(parents=True)
@@ -528,7 +544,8 @@ async def create_job(file: UploadFile | None = File(None), url: str = Form(""),
            "message": "Waiting in line", "error": None, "title": title, "clips": [],
            "created": time.time(), "source": source, "kind": kind, "user_id": user["id"],
            "plan": plan, "mode": "manual" if plan == "free" else "auto", "starts": picked,
-           "clips_wanted": clips, "layout": layout, "captions": captions}
+           "clips_wanted": clips, "layout": layout, "captions": captions,
+           "style": caption_style, "site": request.url.hostname or ""}
     if plan == "free":
         # check again after the upload, in case two uploads were sent at the same time
         used, _ = free_usage(user["id"])

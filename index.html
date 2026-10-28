@@ -154,6 +154,41 @@
   .btn.full { width: 100%; }
   .error { color: var(--red); font-weight: 600; margin: 14px 0 0; }
 
+  /* pro: caption designer */
+  .designer { border: 1px solid var(--line); border-radius: 16px; padding: 18px; margin: 0 0 22px; min-width: 0; }
+  .designer legend { font-weight: 600; padding: 0 8px; }
+  .designer-grid { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 22px; align-items: start; }
+  .designer-controls { display: grid; gap: 18px; min-width: 0; }
+  .ctl .name { display: block; font-weight: 600; margin-bottom: 8px; font-size: 15px; }
+  .ctl.two { display: flex; flex-wrap: wrap; gap: 18px 28px; }
+  .ctl.colors { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; }
+  .fonts span { font-size: 17px; color: var(--ink); }
+  .swatch { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; cursor: pointer; }
+  .swatch input { width: 38px; height: 38px; border: 2px solid var(--line); border-radius: 10px; padding: 2px;
+                  background: var(--plum); cursor: pointer; }
+  .swatch input::-webkit-color-swatch-wrapper { padding: 0; }
+  .swatch input::-webkit-color-swatch { border: 0; border-radius: 6px; }
+  .swatch input::-moz-color-swatch { border: 0; border-radius: 6px; }
+  .swatch.off { opacity: .4; }
+  .switch.small { font-size: 15px; }
+  .reset { margin-left: 18px; font-size: 14px; color: var(--muted); }
+  .preview { position: sticky; top: 16px; text-align: center; }
+  .preview .note { margin-top: 8px; }
+  .preview-phone { background: #000; border-radius: 22px; padding: 6px; border: 1px solid var(--line); }
+  .preview-screen { position: relative; aspect-ratio: 9 / 16; border-radius: 17px; overflow: hidden;
+    background: radial-gradient(circle at 50% 30%, #c98f6b 0 16%, transparent 17%),
+                linear-gradient(180deg, #5b6f86 0%, #2f3d52 55%, #8a4b2c 56%, #6d3a22 100%); }
+  .preview-cap { position: absolute; left: 7%; right: 7%; text-align: center; line-height: 1.15;
+                 --s: calc(var(--px) * var(--k)); font-size: var(--s); }
+  .preview-cap .line { display: inline; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+  .preview-cap .hi { display: inline-block; transform: scale(1.12); }
+  @font-face { font-family: "AC Montserrat"; src: url(/static/Montserrat_900Black.ttf); font-display: swap; }
+  @font-face { font-family: "AC Anton"; src: url(/static/Anton_400Regular.ttf); font-display: swap; }
+  @font-face { font-family: "AC Bangers"; src: url(/static/Bangers_400Regular.ttf); font-display: swap; }
+  @font-face { font-family: "AC Poppins"; src: url(/static/Poppins_800ExtraBold.ttf); font-display: swap; }
+  @font-face { font-family: "AC Bebas"; src: url(/static/BebasNeue_400Regular.ttf); font-display: swap; }
+  @font-face { font-family: "AC Marker"; src: url(/static/PermanentMarker_400Regular.ttf); font-display: swap; }
+
   /* ---------- progress ---------- */
   .status { padding-top: 40px; padding-bottom: 70px; }
   .status .sub { color: var(--muted); margin: 0 0 30px; word-break: break-word; }
@@ -196,6 +231,10 @@
     .welcome { grid-template-columns: 1fr; }
     .welcome .panel { order: -1; }
     .picker { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 640px) {
+    .designer-grid { grid-template-columns: 1fr; }
+    .preview { position: static; width: 170px; margin: 0 auto; }
   }
   @media (max-width: 560px) {
     body { font-size: 16px; }
@@ -247,6 +286,7 @@
               <li><span class="free-secs">10</span>-second clips</li>
               <li><span class="free-day">4</span> clips a day</li>
               <li>Captions and speaker framing</li>
+              <li>Small AutoClipper watermark</li>
             </ul>
           </div>
           <div class="plan pro">
@@ -256,6 +296,8 @@
               <li>AutoClipper finds the best moments for you</li>
               <li>Clips from 20 to 60 seconds</li>
               <li>No daily limit</li>
+              <li>Your own caption fonts and colours</li>
+              <li>No watermark</li>
               <li>Upload files or paste links</li>
             </ul>
           </div>
@@ -317,6 +359,52 @@
           <span class="name">Captions</span>
           <label class="switch"><input type="checkbox" id="cap-pro" checked><span>On</span></label>
         </div>
+
+        <fieldset class="designer" id="designer">
+          <legend>Caption style</legend>
+          <div class="designer-grid">
+            <div class="designer-controls">
+              <div class="ctl">
+                <span class="name" id="lbl-font">Font</span>
+                <div class="choices fonts" role="radiogroup" aria-labelledby="lbl-font" id="font-choices"></div>
+              </div>
+              <div class="ctl colors">
+                <label class="swatch"><input type="color" id="c-text" value="#FFFFFF"><span>Text</span></label>
+                <label class="swatch"><input type="color" id="c-high" value="#FFE500"><span>Spoken word</span></label>
+                <label class="swatch"><input type="color" id="c-bg" value="#000000"><span>Background</span></label>
+                <label class="switch small"><input type="checkbox" id="bg-on"><span>Background box</span></label>
+              </div>
+              <div class="ctl two">
+                <div>
+                  <span class="name" id="lbl-size">Size</span>
+                  <div class="choices" role="radiogroup" aria-labelledby="lbl-size">
+                    <label><input type="radio" name="cap-size" value="s"><span>Small</span></label>
+                    <label><input type="radio" name="cap-size" value="m" checked><span>Medium</span></label>
+                    <label><input type="radio" name="cap-size" value="l"><span>Large</span></label>
+                  </div>
+                </div>
+                <div>
+                  <span class="name" id="lbl-pos">Position</span>
+                  <div class="choices" role="radiogroup" aria-labelledby="lbl-pos">
+                    <label><input type="radio" name="cap-pos" value="bottom" checked><span>Lower</span></label>
+                    <label><input type="radio" name="cap-pos" value="middle"><span>Middle</span></label>
+                  </div>
+                </div>
+              </div>
+              <div class="ctl">
+                <label class="switch small"><input type="checkbox" id="cap-upper" checked><span>All capitals</span></label>
+                <button type="button" class="linkish reset" id="style-reset">Reset to default</button>
+              </div>
+            </div>
+            <div class="preview" aria-hidden="true">
+              <div class="preview-phone"><div class="preview-screen">
+                <div class="preview-cap" id="preview-cap"><span>THIS</span> <span class="hi">IS</span> <span>YOUR</span></div>
+              </div></div>
+              <p class="note">Preview</p>
+            </div>
+          </div>
+        </fieldset>
+
         <button class="btn btn-primary full" type="submit">Make my clips</button>
         <p class="error" data-error role="alert" hidden></p>
       </form>
@@ -374,7 +462,7 @@
           <button class="btn btn-primary full" id="free-go" type="submit" disabled>Make clips</button>
           <p class="error" data-error role="alert" hidden></p>
         </form>
-        <p class="upsell" id="upsell">Want AutoClipper to find the best moments for you, with longer clips and no daily limit? That's <a class="upgrade-link" href="#">Pro</a><span class="no-link">Pro</span>.</p>
+        <p class="upsell" id="upsell">Free clips end with a short AutoClipper card and carry a small watermark. Pro finds the best moments for you, with longer clips, your own caption style, no watermark and no daily limit. <a class="upgrade-link" href="#">Upgrade to Pro</a></p>
       </div>
     </section>
 
@@ -456,7 +544,6 @@
     $("plan-chip").textContent = me.plan === "pro" ? "Pro" : "Free plan";
     $("plan-chip").classList.toggle("pro", me.plan === "pro");
     document.querySelectorAll(".upgrade-link").forEach(a => { a.hidden = !me.upgrade_url; if (me.upgrade_url) a.href = me.upgrade_url; });
-    document.querySelectorAll(".no-link").forEach(s => s.hidden = !!me.upgrade_url);
   }
 
   let authMode = "signup";
@@ -484,7 +571,7 @@
   /* ---------- home: pick the right screen for the plan ---------- */
   function home() {
     if (!S.me) { show("welcome"); karaoke(); return; }
-    if (S.me.plan === "pro") { show("pro"); return; }
+    if (S.me.plan === "pro") { show("pro"); renderPreview(); return; }
     renderFree(); show("free");
   }
 
@@ -523,6 +610,72 @@
   $("plus").onclick = () => { S.count = Math.min(S.cfg.max_clips || 8, S.count + 1); updateCount(); };
   document.querySelectorAll(".switch input").forEach(i => i.onchange = () => i.nextElementSibling.textContent = i.checked ? "On" : "Off");
 
+  /* ---------- Pro caption designer ---------- */
+  const FONTS = [
+    ["classic", "Classic", "Liberation Sans, Arial, Helvetica, sans-serif", 700],
+    ["montserrat", "Montserrat", "'AC Montserrat', sans-serif", 400],
+    ["anton", "Anton", "'AC Anton', sans-serif", 400],
+    ["bangers", "Bangers", "'AC Bangers', sans-serif", 400],
+    ["poppins", "Poppins", "'AC Poppins', sans-serif", 400],
+    ["bebas", "Bebas", "'AC Bebas', sans-serif", 400],
+    ["marker", "Marker", "'AC Marker', cursive", 400],
+  ];
+  const SIZES = { s: 72, m: 92, l: 116 };
+  const DEFAULT_STYLE = { font: "classic", color: "#FFFFFF", highlight: "#FFE500", background: null, bgColor: "#000000", size: "m", position: "bottom", uppercase: true };
+  $("font-choices").innerHTML = FONTS.map(([k, label, fam, w]) =>
+    `<label><input type="radio" name="cap-font" value="${k}"><span style="font-family:${fam};font-weight:${w}">${label}</span></label>`).join("");
+  function loadStyle() {
+    try { return { ...DEFAULT_STYLE, ...JSON.parse(localStorage.getItem("ac-style") || "{}") }; } catch { return { ...DEFAULT_STYLE }; }
+  }
+  function applyStyle(st) {
+    document.querySelector(`input[name=cap-font][value=${st.font}]`).checked = true;
+    $("c-text").value = st.color; $("c-high").value = st.highlight;
+    $("c-bg").value = st.background || st.bgColor || "#000000"; $("bg-on").checked = !!st.background;
+    document.querySelector(`input[name=cap-size][value=${st.size}]`).checked = true;
+    document.querySelector(`input[name=cap-pos][value=${st.position}]`).checked = true;
+    $("cap-upper").checked = st.uppercase;
+    renderPreview();
+  }
+  function readStyle() {
+    return {
+      font: document.querySelector("input[name=cap-font]:checked").value,
+      color: $("c-text").value.toUpperCase(), highlight: $("c-high").value.toUpperCase(),
+      background: $("bg-on").checked ? $("c-bg").value.toUpperCase() : null, bgColor: $("c-bg").value.toUpperCase(),
+      size: document.querySelector("input[name=cap-size]:checked").value,
+      position: document.querySelector("input[name=cap-pos]:checked").value,
+      uppercase: $("cap-upper").checked,
+    };
+  }
+  function renderPreview() {
+    const st = readStyle(), cap = $("preview-cap"), f = FONTS.find(x => x[0] === st.font);
+    const screenW = cap.parentElement.clientWidth || 168;
+    cap.style.setProperty("--px", (screenW / 1080) + "px");
+    cap.style.setProperty("--k", SIZES[st.size]);
+    cap.style.fontFamily = f[2]; cap.style.fontWeight = f[3];
+    cap.style.color = st.color;
+    cap.style.top = st.position === "middle" ? "50%" : "auto";
+    cap.style.bottom = st.position === "middle" ? "auto" : (560 / 1920 * 100) + "%";
+    cap.style.transform = st.position === "middle" ? "translateY(-50%)" : "none";
+    cap.classList.toggle("boxed", !!st.background);
+    cap.style.background = "none";
+    const words = ["This", "is", "your"].map(w => st.uppercase ? w.toUpperCase() : w);
+    cap.innerHTML = `<span class="line">${words.map((w, i) => `<span class="${i === 1 ? "hi" : ""}">${w}</span>`).join(" ")}</span>`;
+    const line = cap.querySelector(".line");
+    line.style.background = st.background || "none";
+    line.style.padding = st.background ? ".08em .25em" : "0";
+    line.style.textShadow = st.background ? "none" : "0 0 2px #000, 0 0 2px #000, 0 0 3px #000, 1px 1px 2px rgba(0,0,0,.6)";
+    cap.querySelector(".hi").style.color = st.highlight;
+    $("c-bg").closest(".swatch").classList.toggle("off", !st.background);
+    try { localStorage.setItem("ac-style", JSON.stringify(st)); } catch {}
+  }
+  $("designer").addEventListener("input", renderPreview);
+  $("designer").addEventListener("change", renderPreview);
+  $("c-bg").addEventListener("input", () => { $("bg-on").checked = true; renderPreview(); });
+  $("style-reset").onclick = () => applyStyle({ ...DEFAULT_STYLE });
+  $("cap-pro").addEventListener("change", () => $("designer").hidden = !$("cap-pro").checked);
+  window.addEventListener("resize", renderPreview);
+  applyStyle(loadStyle());
+
   $("pro-form").onsubmit = (e) => {
     e.preventDefault();
     const out = e.target.querySelector("[data-error]"); err(out);
@@ -540,6 +693,8 @@
     fd.append("clips", S.count);
     fd.append("layout", document.querySelector("input[name=layout-pro]:checked").value);
     fd.append("captions", $("cap-pro").checked);
+    const st = readStyle(); delete st.bgColor;
+    fd.append("style", JSON.stringify(st));
     submit(fd, proTab === "upload" ? proInput.files[0].name : "", out, "pro");
   };
 

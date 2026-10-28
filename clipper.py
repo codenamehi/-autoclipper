@@ -643,53 +643,188 @@ def ass_escape(text: str) -> str:
     return text.replace("\\", "").replace("{", "(").replace("}", ")")
 
 
+# Caption fonts bundled with AutoClipper (files sit next to clipper.py).
+# key: (font family name, file name or None for a system font, use bold)
+CAPTION_FONTS = {
+    "classic": (None, None, True),  # uses the --font / CAPTION_FONT system font
+    "montserrat": ("Montserrat Black", "Montserrat_900Black.ttf", False),
+    "anton": ("Anton", "Anton_400Regular.ttf", False),
+    "bangers": ("Bangers", "Bangers_400Regular.ttf", False),
+    "poppins": ("Poppins ExtraBold", "Poppins_800ExtraBold.ttf", False),
+    "bebas": ("Bebas Neue", "BebasNeue_400Regular.ttf", False),
+    "marker": ("Permanent Marker", "PermanentMarker_400Regular.ttf", False),
+}
+CAPTION_SIZES = {"s": 72, "m": 92, "l": 116}
+DEFAULT_STYLE = {"font": "classic", "color": "#FFFFFF", "highlight": "#FFE500",
+                 "background": None, "size": "m", "position": "bottom", "uppercase": True}
+HEX_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+def clean_style(style: dict | None) -> dict:
+    """Merge with defaults and drop anything invalid."""
+    s = dict(DEFAULT_STYLE)
+    for k, v in (style or {}).items():
+        if k == "font" and v in CAPTION_FONTS:
+            s[k] = v
+        elif k in ("color", "highlight") and isinstance(v, str) and HEX_RE.match(v):
+            s[k] = v.upper()
+        elif k == "background" and (v is None or (isinstance(v, str) and HEX_RE.match(v))):
+            s[k] = v.upper() if v else None
+        elif k == "size" and v in CAPTION_SIZES:
+            s[k] = v
+        elif k == "position" and v in ("bottom", "middle"):
+            s[k] = v
+        elif k == "uppercase":
+            s[k] = bool(v)
+    return s
+
+
+def font_search_dirs() -> list[Path]:
+    here = Path(__file__).resolve().parent
+    return [here, here / "fonts", here / "static" / "fonts"]
+
+
+def stage_font(key: str, workdir: Path) -> None:
+    """Copy a bundled caption font next to the subtitle file so ffmpeg can find it."""
+    fname = CAPTION_FONTS.get(key, (None, None, True))[1]
+    if not fname or (workdir / fname).exists():
+        return
+    for d in font_search_dirs():
+        if (d / fname).is_file():
+            shutil.copy(d / fname, workdir / fname)
+            return
+    log(f"  caption font {fname} not found - using the default font")
+
+
+def ass_color(hex_rgb: str, alpha: int = 0) -> str:
+    """'#RRGGBB' -> ASS '&HAABBGGRR' (alpha 0 = solid, 255 = invisible)."""
+    r, g, b = hex_rgb[1:3], hex_rgb[3:5], hex_rgb[5:7]
+    return f"&H{alpha:02X}{b}{g}{r}".upper()
+
+
+def ass_header(styles: list[str]) -> str:
+    return (f"[Script Info]\nScriptType: v4.00+\nPlayResX: {OUT_W}\nPlayResY: {OUT_H}\n"
+            "WrapStyle: 0\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\n"
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
+            "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
+            "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+            + "\n".join(styles) +
+            "\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
+            "Effect, Text\n")
+
+
 def write_captions(words: list[Word], clip: Clip, path: Path, font: str,
-                   max_words: int = 3, uppercase: bool = True) -> None:
-    ws = [Word(w.start - clip.start, w.end - clip.start, w.text) for w in words
-          if w.end > clip.start and w.start < clip.end]
-    chunks: list[list[Word]] = []
-    cur: list[Word] = []
-    for w in ws:
-        cur.append(w)
-        if len(cur) >= max_words or w.text[-1:] in ".,?!;:":
-            chunks.append(cur)
-            cur = []
-    if cur:
-        chunks.append(cur)
+                   max_words: int = 3, uppercase: bool | None = None,
+                   style: dict | None = None, captions: bool = True,
+                   watermark: str | None = None) -> None:
+    st = clean_style(style)
+    if uppercase is not None:
+        st["uppercase"] = uppercase
+    family, fname, bold = CAPTION_FONTS[st["font"]]
+    if fname:
+        stage_font(st["font"], path.parent)
+    family = family or font
+    size = CAPTION_SIZES[st["size"]]
+    text_c = ass_color(st["color"])
+    hi_c = ass_color(st["highlight"])
+    if st["background"]:  # solid box behind the words
+        border_style, outline_c, outline, shadow = 3, ass_color(st["background"]), 16, 0
+    else:                 # classic black outline
+        border_style, outline_c, outline, shadow = 1, "&H00000000", 7, 3
+    align, margin_v = (2, 560) if st["position"] == "bottom" else (5, 0)
+    styles = [f"Style: Cap,{family},{size},{text_c},{text_c},{outline_c},&H96000000,"
+              f"{-1 if bold else 0},0,0,0,100,100,1,0,{border_style},{outline},{shadow},"
+              f"{align},80,80,{margin_v},1"]
+    if watermark:
+        styles.append(f"Style: Mark,{font},44,&H55FFFFFF,&H55FFFFFF,&H99000000,&H00000000,"
+                      "-1,0,0,0,100,100,1,0,1,2,0,9,0,50,70,1")
 
-    header = f"""[Script Info]
-ScriptType: v4.00+
-PlayResX: {OUT_W}
-PlayResY: {OUT_H}
-WrapStyle: 0
-ScaledBorderAndShadow: yes
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Cap,{font},92,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,-1,0,0,0,100,100,1,0,1,7,3,2,80,80,560,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
     lines = []
-    dur = clip.duration
-    for ci, chunk in enumerate(chunks):
-        chunk_end = chunks[ci + 1][0].start if ci + 1 < len(chunks) else chunk[-1].end + 0.3
-        chunk_end = min(chunk_end, chunk[-1].end + 0.6, dur)
-        for wi, w in enumerate(chunk):
-            st = max(0.0, w.start)
-            en = chunk[wi + 1].start if wi + 1 < len(chunk) else chunk_end
-            if en <= st:
-                continue
-            parts = []
-            for k, x in enumerate(chunk):
-                t = ass_escape(x.text.upper() if uppercase else x.text)
-                if k == wi:  # current word: yellow + slight pop
-                    parts.append(r"{\c&H00E5FF&\fscx112\fscy112}" + t + r"{\c&HFFFFFF&\fscx100\fscy100}")
-                else:
-                    parts.append(t)
-            lines.append(f"Dialogue: 0,{ass_time(st)},{ass_time(en)},Cap,,0,0,0,,{' '.join(parts)}")
-    path.write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
+    if captions:
+        ws = [Word(w.start - clip.start, w.end - clip.start, w.text) for w in words
+              if w.end > clip.start and w.start < clip.end]
+        chunks: list[list[Word]] = []
+        cur: list[Word] = []
+        for w in ws:
+            cur.append(w)
+            if len(cur) >= max_words or w.text[-1:] in ".,?!;:":
+                chunks.append(cur)
+                cur = []
+        if cur:
+            chunks.append(cur)
+        dur = clip.duration
+        hi = hi_c.replace("&H00", "&H")
+        base = text_c.replace("&H00", "&H")
+        for ci, chunk in enumerate(chunks):
+            chunk_end = chunks[ci + 1][0].start if ci + 1 < len(chunks) else chunk[-1].end + 0.3
+            chunk_end = min(chunk_end, chunk[-1].end + 0.6, dur)
+            for wi, w in enumerate(chunk):
+                start = max(0.0, w.start)
+                end = chunk[wi + 1].start if wi + 1 < len(chunk) else chunk_end
+                if end <= start:
+                    continue
+                parts = []
+                for k, x in enumerate(chunk):
+                    t = ass_escape(x.text.upper() if st["uppercase"] else x.text)
+                    if k == wi:  # current word: highlight colour + slight pop
+                        parts.append(rf"{{\c{hi}&\fscx112\fscy112}}{t}{{\c{base}&\fscx100\fscy100}}")
+                    else:
+                        parts.append(t)
+                lines.append(f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Cap,,0,0,0,,"
+                             f"{' '.join(parts)}")
+    if watermark:
+        lines.append(f"Dialogue: 1,{ass_time(0)},{ass_time(clip.duration + 1)},Mark,,0,0,0,,"
+                     f"{ass_escape(watermark)}")
+    path.write_text(ass_header(styles) + "\n".join(lines) + "\n", encoding="utf-8")
+
+
+def has_audio(path: Path) -> bool:
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
+                          "stream=index", "-of", "csv=p=0", str(path)],
+                         capture_output=True, text=True).stdout
+    return bool(out.strip())
+
+
+def add_end_card(clip_path: Path, workdir: Path, title: str, subtitle: str = "",
+                 seconds: float = 2.0, crf: int = 20, preset: str = "veryfast") -> None:
+    """Append a short branded card ("Made with AutoClipper") to the end of a clip."""
+    stage_font("anton", workdir)
+    ass = workdir / "endcard.ass"
+    styles = [
+        "Style: Small,Liberation Sans,54,&H00D8AEB9,&H00D8AEB9,&H00000000,&H00000000,"
+        "-1,0,0,0,100,100,1,0,1,0,0,5,80,80,0,1",
+        "Style: Big,Anton,170,&H0000E5FF,&H0000E5FF,&H00000000,&H00000000,"
+        "0,0,0,0,100,100,2,0,1,0,0,5,60,60,0,1",
+    ]
+    end = ass_time(seconds + 1)
+    lines = [
+        rf"Dialogue: 0,0:00:00.00,{end},Small,,0,0,0,,{{\pos({OUT_W // 2},{OUT_H // 2 - 170})\fad(150,0)}}Made with",
+        rf"Dialogue: 0,0:00:00.00,{end},Big,,0,0,0,,{{\pos({OUT_W // 2},{OUT_H // 2})\fad(150,0)}}{ass_escape(title.upper())}",
+    ]
+    if subtitle:
+        lines.append(rf"Dialogue: 0,0:00:00.00,{end},Small,,0,0,0,,{{\pos({OUT_W // 2},{OUT_H // 2 + 170})\fad(150,0)}}{ass_escape(subtitle)}")
+    ass.write_text(ass_header(styles) + "\n".join(lines) + "\n", encoding="utf-8")
+
+    fps = probe(clip_path)["fps"]
+    tmp = clip_path.with_name(clip_path.stem + "_end.mp4")
+    audio = has_audio(clip_path)
+    card = (f"color=c=0x1E1433:s={OUT_W}x{OUT_H}:r={fps:g}:d={seconds}")
+    cmd = ["ffmpeg", "-y", "-v", "error", "-i", str(clip_path.resolve()),
+           "-f", "lavfi", "-i", card]
+    if audio:
+        cmd += ["-f", "lavfi", "-t", f"{seconds}", "-i", "anullsrc=r=48000:cl=stereo"]
+        graph = (f"[1:v]subtitles={ass.name}:fontsdir=.,setsar=1,format=yuv420p[e];"
+                 "[0:v]setsar=1,format=yuv420p[m];[0:a]aresample=48000,"
+                 "aformat=channel_layouts=stereo[ma];[m][ma][e][2:a]concat=n=2:v=1:a=1[v][a]")
+        maps = ["-map", "[v]", "-map", "[a]", "-c:a", "aac", "-b:a", "160k"]
+    else:
+        graph = (f"[1:v]subtitles={ass.name}:fontsdir=.,setsar=1,format=yuv420p[e];"
+                 "[0:v]setsar=1,format=yuv420p[m];[m][e]concat=n=2:v=1:a=0[v]")
+        maps = ["-map", "[v]"]
+    run(cmd + ["-filter_complex", graph, *maps, "-c:v", "libx264", "-preset", preset,
+               "-crf", str(crf), "-pix_fmt", "yuv420p", "-r", f"{fps:g}",
+               "-movflags", "+faststart", str(tmp.resolve())], cwd=str(workdir))
+    tmp.replace(clip_path)
 
 
 # --------------------------------------------------------------------------- #
@@ -710,7 +845,8 @@ def render_clip(video: Path, info: dict, clip: Clip, ass: Path, out: Path,
     fps = min(info["fps"], max_fps)
     fps = 30.0 if fps < 10 else round(fps, 3)
     start, dur = clip.start, clip.duration
-    subs = f"subtitles={ass.name}"  # run with cwd=ass.parent -> no path-escaping issues
+    # run with cwd=ass.parent -> no path-escaping issues; caption fonts are staged there
+    subs = f"subtitles={ass.name}:fontsdir=."
     seek = ["-ss", f"{start:.3f}", "-t", f"{dur:.3f}"]
     cwd = str(ass.parent)
     src = str(video.resolve())
@@ -792,11 +928,16 @@ def run_pipeline(source: str, out_root: Path, *, clips: int = 4, min_len: float 
                  cookies_browser: str | None = None, allow_local: bool = True,
                  max_minutes: float | None = None, flat: bool = False,
                  manual_starts: list[float] | None = None, manual_len: float = 10,
+                 caption_style: dict | None = None, watermark: str | None = None,
+                 end_card: tuple[str, ...] | None = None,
                  progress: ProgressFn | None = None) -> Path:
     """Run everything. Returns the folder holding clip_N.mp4 files and clips.json.
 
     manual_starts: if given, skip the automatic picker and make one clip of
     manual_len seconds starting at each of these times (used by the free plan).
+    caption_style: font/colours/background/size/position (see DEFAULT_STYLE).
+    watermark: small text in the top corner of every clip (free plan).
+    end_card: (title, subtitle) for a 2-second branded card at the end (free plan).
     """
     def report(stage: str, frac: float, msg: str) -> None:
         if progress:
@@ -872,17 +1013,22 @@ def run_pipeline(source: str, out_root: Path, *, clips: int = 4, min_len: float 
         if captions and manual_starts is not None:
             words += transcribe_segment(video, clip.start, clip.duration, model, language,
                                         work / f"{name}.wav")
-        if captions:
-            write_captions(words, clip, ass, font, uppercase=uppercase)
-        else:
-            ass.write_text("[Script Info]\nScriptType: v4.00+\n\n[Events]\n", encoding="utf-8")
+        style = dict(caption_style or {})
+        style.setdefault("uppercase", uppercase)
+        write_captions(words, clip, ass, font, style=style, captions=captions,
+                       watermark=watermark)
         out = dest / f"{name}.mp4"
         render_clip(video, info, clip, ass, out, layout, crf, preset, max_fps,
                     on_frame=lambda f, k=k, base=base: report(
                         "render", base + f / len(picked), f"Making clip {k} of {len(picked)}"))
+        length = clip.duration
+        if end_card:
+            add_end_card(out, work, end_card[0], end_card[1] if len(end_card) > 1 else "",
+                         crf=crf, preset=preset)
+            length += 2.0
         text = " ".join(w.text for w in words if clip.start <= w.start < clip.end)
         meta.append({"file": out.name, "start": round(clip.start, 2), "end": round(clip.end, 2),
-                     "duration": round(clip.duration, 1), "title": clip.title,
+                     "duration": round(length, 1), "title": clip.title,
                      "why": clip.reason, "transcript": text})
 
     (dest / "clips.json").write_text(json.dumps({"source": source, "title": title,

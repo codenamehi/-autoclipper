@@ -118,6 +118,8 @@ AutoClipper includes a website with accounts and two plans:
 | Limit | 4 clips per 24 hours | No daily limit |
 | Links | Upload files only | Upload files or paste links |
 | Captions and framing | Yes | Yes |
+| Caption style | Standard | Choose font, colours, background box, size and position (with live preview) |
+| Watermark | Small corner mark + 2-second "Made with AutoClipper" end card | None |
 
 Everyone starts on Free. If a video fails, its free clips aren't used up.
 
@@ -157,6 +159,8 @@ Free clips are quick: only the 10 seconds you picked get processed. Pro videos t
 |---|---|---|
 | `ADMIN_PASSWORD` | | Turns on the /admin page for changing plans |
 | `UPGRADE_URL` | | Payment page for the Upgrade to Pro button |
+| `WATERMARK_TEXT` | `AutoClipper` | Name shown in the watermark and end card on free clips (empty = no watermark) |
+| `WATERMARK_URL` | your site's address | Web address shown on the end card |
 | `FREE_CLIPS_PER_DAY` | `4` | Free plan clips per 24 hours |
 | `FREE_CLIP_SECONDS` | `10` | Free plan clip length |
 | `MAX_CLIPS` | `8` | Most clips per video on Pro |
@@ -175,6 +179,10 @@ Free clips are quick: only the 10 seconds you picked get processed. Pro videos t
 ### Before charging people
 
 You'll still want terms of service, a privacy policy, a policy on copyrighted uploads, and automatic upgrades through Stripe webhooks.
+
+### Caption fonts
+
+Pro users can choose Classic, Montserrat, Anton, Bangers, Poppins, Bebas Neue or Permanent Marker. The `.ttf` font files sit next to `clipper.py`. Their licences (SIL Open Font License, and Apache 2.0 for Permanent Marker) are in `Caption-fonts-licenses.txt`.
 
 ## Speed
 
