@@ -1061,9 +1061,22 @@
     clearTimeout(S.timer);
     show("status"); resetStatus();
     if (first) { setSteps(first.mode === "manual" ? "free" : "pro"); handle(first); }
+    const LOST = "The server restarted while making your clips, so this video was lost. This usually happens when a video is too long for the server's memory. Try a shorter video, or try again in a few minutes.";
+    let down = 0, wasRunning = !!first;
     const tick = () => api("/api/jobs/" + encodeURIComponent(id))
-      .then(d => { if (!first) { setSteps(d.mode === "manual" ? "free" : "pro"); first = d; } if (handle(d)) S.timer = setTimeout(tick, 2000); })
-      .catch(x => { if (x.status === 401) { setMe(null); home(); } else if (x.status) fail(x.message); else S.timer = setTimeout(tick, 5000); });
+      .then(d => { down = 0; wasRunning = true; if (!first) { setSteps(d.mode === "manual" ? "free" : "pro"); first = d; } if (handle(d)) S.timer = setTimeout(tick, 2000); })
+      .catch(x => {
+        if (x.status === 401) { setMe(null); return home(); }
+        if (x.status === 404 && wasRunning && down > 0) return fail(LOST);   // came back without our job
+        if (x.status === 404) return fail(x.message);
+        if (!x.status || x.status >= 500) {                                 // server busy or restarting: keep waiting
+          down++;
+          if (down > 40) return fail(LOST);                                 // about 3 minutes
+          if (down === 2) $("status-title").textContent = "Reconnecting to the server";
+          S.timer = setTimeout(tick, 5000); return;
+        }
+        fail(x.message);
+      });
     tick();
   }
   function handle(job) {
