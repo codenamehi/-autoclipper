@@ -179,6 +179,7 @@ Free clips are quick: only the 10 seconds you picked get processed. Pro videos t
 | `MAX_MINUTES` | `180` | Longest video allowed |
 | `KEEP_HOURS` | `24` | Results are deleted after this |
 | `WORKERS` | `1` | Videos processed at the same time |
+| `FFMPEG_THREADS` | `2` | Threads for video encoding. Higher is faster but uses more memory |
 | `WHISPER_MODEL` | `small` | Speech model: `base` is faster, `medium` more accurate |
 | `DATABASE_URL` | | Supabase/Postgres connection string for accounts (see above) |
 | `SECRET_KEY` | auto | Signs login cookies (made and saved automatically if not set) |
