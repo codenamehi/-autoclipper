@@ -36,7 +36,7 @@ import zipfile
 from html import escape
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
@@ -85,35 +85,92 @@ work_queue: "queue.Queue[str]" = queue.Queue()
 
 # --------------------------------------------------------------------------- #
 # Database (users + free-plan usage)
+#
+# With DATABASE_URL set (e.g. Supabase), accounts are stored in Postgres and
+# survive restarts. Without it, a small SQLite file in DATA_DIR is used.
 # --------------------------------------------------------------------------- #
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+USE_PG = DATABASE_URL.startswith(("postgres://", "postgresql://"))
+# In Postgres the tables live in their own "autoclipper" schema, which Supabase
+# does not expose through its public API.
+TABLES = ({"users": "autoclipper.users", "usage": "autoclipper.usage",
+           "settings": "autoclipper.settings"} if USE_PG else
+          {"users": "users", "usage": "usage", "settings": "settings"})
 db_lock = threading.Lock()
 
+if USE_PG:
+    import psycopg
+    from psycopg.rows import dict_row
+    INTEGRITY_ERRORS: tuple = (sqlite3.IntegrityError, psycopg.IntegrityError)
+else:
+    INTEGRITY_ERRORS = (sqlite3.IntegrityError,)
 
-def db() -> sqlite3.Connection:
+
+def _connect():
+    if USE_PG:
+        extra = {} if "sslmode=" in DATABASE_URL else {"sslmode": "require"}
+        # prepare_threshold=None: works with Supabase's connection pooler
+        return psycopg.connect(DATABASE_URL, row_factory=dict_row, autocommit=True,
+                               prepare_threshold=None, connect_timeout=15, **extra)
     con = sqlite3.connect(DB_PATH, timeout=30)
     con.row_factory = sqlite3.Row
     return con
 
 
+def q(sql: str, params: tuple = (), fetch: str | None = None):
+    """Run one statement. Write table names as {users}/{usage}/{settings} and
+    values as ?. fetch: None (returns rows changed), "one" or "all" (dicts)."""
+    sql = sql.format(**TABLES)
+    if USE_PG:
+        sql = sql.replace("?", "%s")
+    with db_lock:
+        con = _connect()
+        try:
+            cur = con.execute(sql, params)
+            if fetch == "one":
+                row = cur.fetchone()
+                out = dict(row) if row is not None else None
+            elif fetch == "all":
+                out = [dict(r) for r in cur.fetchall()]
+            else:
+                out = cur.rowcount
+            if not USE_PG:
+                con.commit()
+            return out
+        finally:
+            con.close()
+
+
 def init_db() -> None:
-    with db_lock, db() as con:
-        con.executescript("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT UNIQUE NOT NULL,
-                pw_hash TEXT NOT NULL,
-                plan TEXT NOT NULL DEFAULT 'free',
-                created REAL NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS usage (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                job_id TEXT NOT NULL,
-                clips INTEGER NOT NULL,
-                ts REAL NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS usage_user_ts ON usage(user_id, ts);
-        """)
+    if USE_PG:
+        statements = [
+            "CREATE SCHEMA IF NOT EXISTS autoclipper",
+            """CREATE TABLE IF NOT EXISTS {users} (
+                id BIGSERIAL PRIMARY KEY, email TEXT UNIQUE NOT NULL, pw_hash TEXT NOT NULL,
+                plan TEXT NOT NULL DEFAULT 'free', created DOUBLE PRECISION NOT NULL)""",
+            """CREATE TABLE IF NOT EXISTS {usage} (
+                id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, job_id TEXT NOT NULL,
+                clips INTEGER NOT NULL, ts DOUBLE PRECISION NOT NULL)""",
+            "CREATE INDEX IF NOT EXISTS usage_user_ts ON {usage} (user_id, ts)",
+            "CREATE TABLE IF NOT EXISTS {settings} (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            # belt and braces: block Supabase's public API from these tables
+            "ALTER TABLE {users} ENABLE ROW LEVEL SECURITY",
+            "ALTER TABLE {usage} ENABLE ROW LEVEL SECURITY",
+            "ALTER TABLE {settings} ENABLE ROW LEVEL SECURITY",
+        ]
+    else:
+        statements = [
+            """CREATE TABLE IF NOT EXISTS {users} (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL,
+                pw_hash TEXT NOT NULL, plan TEXT NOT NULL DEFAULT 'free', created REAL NOT NULL)""",
+            """CREATE TABLE IF NOT EXISTS {usage} (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+                job_id TEXT NOT NULL, clips INTEGER NOT NULL, ts REAL NOT NULL)""",
+            "CREATE INDEX IF NOT EXISTS usage_user_ts ON {usage} (user_id, ts)",
+            "CREATE TABLE IF NOT EXISTS {settings} (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        ]
+    for st in statements:
+        q(st)
 
 
 def hash_pw(pw: str) -> str:
@@ -131,38 +188,59 @@ def check_pw(pw: str, stored: str) -> bool:
         return False
 
 
-def get_user(user_id: int) -> sqlite3.Row | None:
-    with db() as con:
-        return con.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+def get_user(user_id: int) -> dict | None:
+    return q("SELECT * FROM {users} WHERE id = ?", (user_id,), "one")
+
+
+def get_user_by_email(email: str) -> dict | None:
+    return q("SELECT * FROM {users} WHERE email = ?", (email,), "one")
+
+
+def create_user(email: str, pw_hash: str) -> int:
+    row = q("INSERT INTO {users} (email, pw_hash, plan, created) VALUES (?, ?, ?, ?) RETURNING id",
+            (email, pw_hash, "free", time.time()), "one")
+    return int(row["id"])
+
+
+def set_plan(*, plan: str, user_id: int | None = None, email: str | None = None) -> int:
+    if user_id is not None:
+        return q("UPDATE {users} SET plan = ? WHERE id = ?", (plan, user_id))
+    return q("UPDATE {users} SET plan = ? WHERE email = ?", (plan, email))
 
 
 def free_usage(user_id: int) -> tuple[int, float | None]:
     """(clips used in the last 24 hours, time the oldest of those expires)."""
     since = time.time() - 86400
-    with db() as con:
-        rows = con.execute("SELECT clips, ts FROM usage WHERE user_id = ? AND ts > ? ORDER BY ts",
-                           (user_id, since)).fetchall()
+    rows = q("SELECT clips, ts FROM {usage} WHERE user_id = ? AND ts > ? ORDER BY ts",
+             (user_id, since), "all")
     used = sum(r["clips"] for r in rows)
     return used, (rows[0]["ts"] + 86400 if rows else None)
 
 
 def charge(user_id: int, job_id: str, clips: int) -> None:
-    with db_lock, db() as con:
-        con.execute("INSERT INTO usage (user_id, job_id, clips, ts) VALUES (?, ?, ?, ?)",
-                    (user_id, job_id, clips, time.time()))
+    q("INSERT INTO {usage} (user_id, job_id, clips, ts) VALUES (?, ?, ?, ?)",
+      (user_id, job_id, clips, time.time()))
 
 
 def refund(job_id: str) -> None:
-    with db_lock, db() as con:
-        con.execute("DELETE FROM usage WHERE job_id = ?", (job_id,))
+    q("DELETE FROM {usage} WHERE job_id = ?", (job_id,))
 
 
 # --------------------------------------------------------------------------- #
 # Sessions (signed cookie)
 # --------------------------------------------------------------------------- #
 def secret_key() -> bytes:
+    """SECRET_KEY setting > key saved in the database > key saved in DATA_DIR."""
     if os.getenv("SECRET_KEY"):
         return os.environ["SECRET_KEY"].encode()
+    if USE_PG:
+        row = q("SELECT value FROM {settings} WHERE key = 'session_secret'", (), "one")
+        if not row:
+            q("INSERT INTO {settings} (key, value) VALUES ('session_secret', ?) "
+              "ON CONFLICT (key) DO NOTHING", (secrets.token_hex(32),))
+            row = q("SELECT value FROM {settings} WHERE key = 'session_secret'", (), "one")
+        v = row["value"]
+        return v if isinstance(v, bytes) else v.encode()
     f = DATA_DIR / "secret.key"
     if not f.exists():
         f.write_text(secrets.token_hex(32))
@@ -194,7 +272,7 @@ def read_session(token: str | None) -> int | None:
     return int(uid) if int(exp) > time.time() else None
 
 
-def current_user(request: Request) -> sqlite3.Row:
+def current_user(request: Request) -> dict:
     uid = read_session(request.cookies.get("session"))
     user = get_user(uid) if uid else None
     if not user:
@@ -207,7 +285,7 @@ def set_cookie(resp: Response, user_id: int) -> None:
                     httponly=True, samesite="lax", secure=SECURE_COOKIES)
 
 
-def me_payload(user: sqlite3.Row) -> dict:
+def me_payload(user: dict) -> dict:
     out = {"email": user["email"], "plan": user["plan"], "upgrade_url": UPGRADE_URL}
     if user["plan"] == "free":
         used, next_at = free_usage(user["id"])
@@ -417,11 +495,8 @@ def signup(request: Request, email: str = Form(...), password: str = Form(...)):
     if len(password) < 8:
         raise HTTPException(400, "Use a password with at least 8 characters.")
     try:
-        with db_lock, db() as con:
-            cur = con.execute("INSERT INTO users (email, pw_hash, plan, created) VALUES (?,?,?,?)",
-                              (email, hash_pw(password), "free", time.time()))
-            uid = cur.lastrowid
-    except sqlite3.IntegrityError:
+        uid = create_user(email, hash_pw(password))
+    except INTEGRITY_ERRORS:
         raise HTTPException(409, "There's already an account with that email. Log in instead.")
     resp = JSONResponse(me_payload(get_user(uid)))
     set_cookie(resp, uid)
@@ -432,8 +507,7 @@ def signup(request: Request, email: str = Form(...), password: str = Form(...)):
 def login(email: str = Form(...), password: str = Form(...)):
     email = email.strip().lower()
     slow_down("login:" + email)
-    with db() as con:
-        user = con.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    user = get_user_by_email(email)
     if not user or not check_pw(password, user["pw_hash"]):
         raise HTTPException(401, "That email and password don't match.")
     resp = JSONResponse(me_payload(user))
@@ -616,11 +690,11 @@ def admin_only(creds: HTTPBasicCredentials | None = Depends(basic)):
 
 
 @app.get("/admin", response_class=HTMLResponse, dependencies=[Depends(admin_only)])
-def admin(q: str = ""):
-    with db() as con:
-        rows = con.execute("SELECT * FROM users WHERE email LIKE ? ORDER BY created DESC LIMIT 200",
-                           (f"%{q.strip().lower()}%",)).fetchall()
-        counts = dict(con.execute("SELECT plan, COUNT(*) FROM users GROUP BY plan").fetchall())
+def admin(search: str = Query("", alias="q")):
+    rows = q("SELECT * FROM {users} WHERE email LIKE ? ORDER BY created DESC LIMIT 200",
+             (f"%{search.strip().lower()}%",), "all")
+    counts = {r["plan"]: r["n"] for r in q(
+        "SELECT plan, COUNT(*) AS n FROM {users} GROUP BY plan", (), "all")}
     trs = "".join(
         f"<tr><td>{escape(r['email'])}</td><td>{time.strftime('%Y-%m-%d', time.gmtime(r['created']))}</td>"
         f"<td><form method=post action=/admin/plan><input type=hidden name=user_id value={r['id']}>"
@@ -635,7 +709,7 @@ button{{font:inherit;padding:6px 14px;margin-right:6px;border-radius:99px;border
 button.on{{background:#FFE500;color:#1E1433;border-color:#FFE500}}input[type=search]{{font:inherit;padding:10px;width:280px;border-radius:8px;border:1px solid #4B3B78;background:#291C46;color:#F4F0FF}}
 a{{color:#FFE500}}</style>
 <h1>Users</h1><p>{counts.get('free', 0)} free, {counts.get('pro', 0)} Pro. Click a plan to change someone's plan.</p>
-<form><input type=search name=q value="{escape(q)}" placeholder="Search by email"> <button>Search</button></form>
+<form><input type=search name=q value="{escape(search)}" placeholder="Search by email"> <button>Search</button></form>
 <table><tr><th>Email</th><th>Joined</th><th>Plan</th></tr>{trs}</table>"""
 
 
@@ -643,8 +717,7 @@ a{{color:#FFE500}}</style>
 def admin_plan(user_id: int = Form(...), plan: str = Form(...)):
     if plan not in PLANS:
         raise HTTPException(400, "Unknown plan.")
-    with db_lock, db() as con:
-        con.execute("UPDATE users SET plan = ? WHERE id = ?", (plan, user_id))
+    set_plan(plan=plan, user_id=user_id)
     return RedirectResponse("/admin", status_code=303)
 
 
@@ -671,9 +744,7 @@ def cli_set_plan(email: str, plan: str) -> None:
     setup()
     if plan not in PLANS:
         sys.exit(f"Plan must be one of: {', '.join(PLANS)}")
-    with db_lock, db() as con:
-        n = con.execute("UPDATE users SET plan = ? WHERE email = ?",
-                        (plan, email.strip().lower())).rowcount
+    n = set_plan(plan=plan, email=email.strip().lower())
     print(f"{email} is now on the {plan} plan." if n else f"No account found for {email}.")
 
 
