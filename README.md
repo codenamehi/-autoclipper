@@ -109,14 +109,13 @@ To use LLM picking there, add `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` under **Se
 
 ## Run it as a website
 
-AutoClipper includes a website with accounts and two plans:
+AutoClipper includes a website with accounts and two plans. People upload a video file and get their clips back:
 
 | | Free | Pro |
 |---|---|---|
 | Choosing moments | You pick them on a video player | AutoClipper finds the best ones |
 | Clip length | 10 seconds | 20–60 seconds |
 | Limit | 4 clips per 24 hours | No daily limit |
-| Links | Upload files only | Upload files or paste links |
 | Captions and framing | Yes | Yes |
 | Caption style | Standard | Choose font, colours, background box, size and position (with live preview) |
 | Watermark | Small corner mark + 2-second "Made with AutoClipper" end card | None |
@@ -136,6 +135,16 @@ Open http://localhost:8000. Each person only sees their own clips, and everythin
 - Or from the command line: `python server.py set-plan someone@example.com pro`
 
 To take payments, set `UPGRADE_URL` to a payment page (a Stripe Payment Link works). An **Upgrade to Pro** button then appears for free users. When someone pays, upgrade them on the admin page. Upgrading automatically after payment needs a Stripe webhook, which can be added later.
+
+### Keep accounts safe with Supabase (recommended)
+
+By default, accounts are saved in a small file on the server. Hosts that wipe files on restart, like Render's free plan, would lose every account. To keep them, store accounts in a free [Supabase](https://supabase.com) database:
+
+1. Create a Supabase project. Choose a database password with **only letters and numbers**, and pick the region closest to your server.
+2. In the project, click **Connect**. Under **Transaction pooler**, copy the connection string (port `6543`), and replace `[YOUR-PASSWORD]` with your database password.
+3. Add it to your server's settings as `DATABASE_URL`, then restart.
+
+AutoClipper creates its tables automatically in a private `autoclipper` schema, which Supabase's public API can't reach. Passwords are stored hashed, never as plain text. Login sessions are kept in the database too, so people stay logged in after restarts.
 
 ### Put it online
 
@@ -165,13 +174,14 @@ Free clips are quick: only the 10 seconds you picked get processed. Pro videos t
 | `FREE_CLIP_SECONDS` | `10` | Free plan clip length |
 | `MAX_CLIPS` | `8` | Most clips per video on Pro |
 | `MAX_ACTIVE_JOBS` | `2` | Videos one person can have in progress |
-| `ALLOW_URLS` | `true` | Let Pro users paste links (YouTube often blocks servers) |
+| `ALLOW_URLS` | `false` | Set to `true` to let Pro users paste links (YouTube usually blocks servers, so it is off) |
 | `MAX_UPLOAD_MB` | `4096` | Largest upload allowed |
 | `MAX_MINUTES` | `180` | Longest video allowed |
 | `KEEP_HOURS` | `24` | Results are deleted after this |
 | `WORKERS` | `1` | Videos processed at the same time |
 | `WHISPER_MODEL` | `small` | Speech model: `base` is faster, `medium` more accurate |
-| `SECRET_KEY` | auto | Signs login cookies (made automatically if not set) |
+| `DATABASE_URL` | | Supabase/Postgres connection string for accounts (see above) |
+| `SECRET_KEY` | auto | Signs login cookies (made and saved automatically if not set) |
 | `SECURE_COOKIES` | `false` | Set to `true` once your site uses https |
 | `PORT` / `DATA_DIR` | `8000` / `data` | Port, and where accounts, uploads and clips are stored |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | | Optional smarter clip picking for Pro |
