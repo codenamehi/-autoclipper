@@ -225,19 +225,33 @@ def transcribe(wav: Path, model_size: str, language: str | None, cache: Path,
 
     model = get_whisper(model_size)
     log("Transcribing...")
-    segments, info = model.transcribe(str(wav), language=language, word_timestamps=True,
-                                      vad_filter=True)
-    total = duration or getattr(info, "duration", 0) or 1
     words: list[Word] = []
-    for seg in segments:
-        for w in seg.words or []:
-            t = w.word.strip()
-            if t:
-                words.append(Word(round(w.start, 3), round(w.end, 3), t))
-        if progress:
-            progress("transcribe", min(0.99, seg.end / total), "Listening to the video")
-        else:
-            print(f"\r  transcribed {seg.end:7.1f}s", end="", flush=True)
+    # Feed the audio 10 minutes at a time so long videos don't fill the memory.
+    with wave.open(str(wav), "rb") as wf:
+        sr = wf.getframerate()
+        total = duration or wf.getnframes() / sr or 1
+        chunk = sr * 600
+        offset = 0.0
+        while True:
+            raw = wf.readframes(chunk)
+            if not raw:
+                break
+            audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+            segments, info = model.transcribe(audio, language=language, word_timestamps=True,
+                                              vad_filter=True)
+            language = language or getattr(info, "language", None)  # keep it consistent
+            for seg in segments:
+                for w in seg.words or []:
+                    t = w.word.strip()
+                    if t:
+                        words.append(Word(round(offset + w.start, 3), round(offset + w.end, 3), t))
+                done = offset + seg.end
+                if progress:
+                    progress("transcribe", min(0.99, done / total), "Listening to the video")
+                else:
+                    print(f"\r  transcribed {done:7.1f}s", end="", flush=True)
+            offset += len(audio) / sr
+            del audio
     if not progress:
         print()
     cache.write_text(json.dumps([asdict(w) for w in words]), encoding="utf-8")
@@ -302,12 +316,22 @@ FILLERS = {"um", "uh", "erm", "hmm", "like", "basically", "you know"}
 
 
 def loudness_profile(wav: Path, step: float = 0.5) -> np.ndarray:
+    """Loudness per half-second. Reads the audio a minute at a time to keep memory low."""
+    parts = []
     with wave.open(str(wav), "rb") as wf:
         sr = wf.getframerate()
-        data = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).astype(np.float32)
-    hop = int(sr * step)
-    n = max(1, len(data) // hop)
-    rms = np.sqrt(np.mean(data[: n * hop].reshape(n, hop) ** 2, axis=1) + 1e-9)
+        hop = int(sr * step)
+        block = hop * 120  # one minute
+        while True:
+            raw = wf.readframes(block)
+            if not raw:
+                break
+            data = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+            n = len(data) // hop
+            if n == 0:
+                break
+            parts.append(np.sqrt(np.mean(data[: n * hop].reshape(n, hop) ** 2, axis=1) + 1e-9))
+    rms = np.concatenate(parts) if parts else np.array([1.0])
     db = 20 * np.log10(rms + 1e-9)
     speech = db[db > np.percentile(db, 20)]
     mu, sd = (speech.mean(), speech.std() + 1e-6) if len(speech) else (db.mean(), 1.0)
@@ -821,7 +845,8 @@ def add_end_card(clip_path: Path, workdir: Path, title: str, subtitle: str = "",
         graph = (f"[1:v]subtitles={ass.name}:fontsdir=.,setsar=1,format=yuv420p[e];"
                  "[0:v]setsar=1,format=yuv420p[m];[m][e]concat=n=2:v=1:a=0[v]")
         maps = ["-map", "[v]"]
-    run(cmd + ["-filter_complex", graph, *maps, "-c:v", "libx264", "-preset", preset,
+    run(cmd + ["-filter_complex", graph, *maps, "-c:v", "libx264", "-threads", FFMPEG_THREADS,
+               "-preset", preset,
                "-crf", str(crf), "-pix_fmt", "yuv420p", "-r", f"{fps:g}",
                "-movflags", "+faststart", str(tmp.resolve())], cwd=str(workdir))
     tmp.replace(clip_path)
@@ -830,8 +855,12 @@ def add_end_card(clip_path: Path, workdir: Path, title: str, subtitle: str = "",
 # --------------------------------------------------------------------------- #
 # 4c. Render
 # --------------------------------------------------------------------------- #
+FFMPEG_THREADS = os.getenv("FFMPEG_THREADS", "2")  # fewer threads = less memory
+
+
 def encode_args(out: Path, fps: float, crf: int, preset: str) -> list[str]:
-    return ["-r", f"{fps:g}", "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+    return ["-r", f"{fps:g}", "-c:v", "libx264", "-threads", FFMPEG_THREADS,
+            "-preset", preset, "-crf", str(crf),
             "-pix_fmt", "yuv420p", "-g", str(int(round(fps * 2))),
             "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
             "-movflags", "+faststart", "-shortest", str(out)]
@@ -879,7 +908,7 @@ def render_clip(video: Path, info: dict, clip: Clip, ass: Path, out: Path,
     # Face-tracked: decode at a constant frame rate -> crop in Python -> one encode
     n_frames = int(round(dur * fps))
     lefts = camera_path(*track, n_frames + int(fps), fps, crop_w, src_w)
-    dec = subprocess.Popen(["ffmpeg", "-v", "error", *seek, "-i", src,
+    dec = subprocess.Popen(["ffmpeg", "-v", "error", "-threads", FFMPEG_THREADS, *seek, "-i", src,
                             "-vf", f"fps={fps}", "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
                            stdout=subprocess.PIPE)
     enc = subprocess.Popen(["ffmpeg", "-y", "-v", "error",
