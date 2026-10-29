@@ -6,3 +6,5 @@ numpy>=1.24
 fastapi>=0.110
 uvicorn[standard]>=0.29
 python-multipart>=0.0.9
+# Supabase / Postgres for accounts (used when DATABASE_URL is set)
+psycopg[binary]>=3.1
