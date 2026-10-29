@@ -60,7 +60,7 @@ KEEP_HOURS = float(os.getenv("KEEP_HOURS", "24"))     # results are deleted afte
 MAX_ACTIVE_JOBS = int(os.getenv("MAX_ACTIVE_JOBS", "2"))  # per person, at the same time
 FREE_CLIPS_PER_DAY = int(os.getenv("FREE_CLIPS_PER_DAY", "4"))
 FREE_CLIP_SECONDS = float(os.getenv("FREE_CLIP_SECONDS", "10"))
-ALLOW_URLS = env_bool("ALLOW_URLS", True)             # Pro only
+ALLOW_URLS = env_bool("ALLOW_URLS", False)            # Pro only; off because YouTube blocks servers
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
 FONT = os.getenv("CAPTION_FONT", "Liberation Sans")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
@@ -570,8 +570,8 @@ async def create_job(request: Request, file: UploadFile | None = File(None),
             raise HTTPException(403, f"You have {left} free clip{'s' if left != 1 else ''} left "
                                      "today. Remove some moments, or upgrade to Pro.")
         if url.strip() and not (file and file.filename):
-            raise HTTPException(403, "Pasting links is a Pro feature. Upload the video file "
-                                     "instead.")
+            raise HTTPException(403, "Upload the video file instead." if not ALLOW_URLS else
+                                "Pasting links is a Pro feature. Upload the video file instead.")
         clips = len(picked)
     else:
         clips = max(1, min(MAX_CLIPS, clips))
